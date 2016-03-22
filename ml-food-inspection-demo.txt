@@ -1,0 +1,101 @@
+
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import HashingTF, Tokenizer
+from pyspark.sql import Row
+from pyspark.sql.functions import UserDefinedFunction
+from pyspark.sql.types import *
+
+def csvParse(s):
+    import csv
+    from StringIO import StringIO
+    sio = StringIO(s)
+    value = csv.reader(sio).next()
+    sio.close()
+    return value
+
+inspections = sc.textFile('wasb:///HdiSamples/HdiSamples/FoodInspectionData/Food_Inspections1.csv').map(csvParse)
+
+inspections.take(2)
+
+schema = StructType([StructField("id", IntegerType(), False),
+                     StructField("name", StringType(), False),
+                     StructField("results", StringType(), False),
+                     StructField("violations", StringType(), True)])
+
+df = sqlContext.createDataFrame(inspections.map(lambda l: (int(l[0]), l[1], l[12], l[13])) , schema)
+df.registerTempTable('CountResults')
+
+df.show(5)
+
+def labelForResults(s):
+    if s == 'Fail':
+        return 0.0
+    elif s == 'Pass w/Conditions' or s == 'Pass':
+        return 1.0
+    else:
+        return -1.0
+    
+
+label = UserDefinedFunction(labelForResults, DoubleType())
+labeledData = df.select(label(df.results).alias('label'), df.violations).where('label>=0')
+
+labeledData.take(1)
+
+tokenizer = Tokenizer(inputCol="violations", outputCol="words")
+hashingTF = HashingTF(inputCol=tokenizer.getOutputCol(), outputCol="features")
+lr = LogisticRegression(maxIter=10, regParam=0.01)
+pipeline = Pipeline(stages=[tokenizer, hashingTF, lr])
+
+model = pipeline.fit(labeledData)
+
+testData = sc.textFile('wasb:///HdiSamples/HdiSamples/FoodInspectionData/Food_Inspections2.csv').map(csvParse)\
+           .map(lambda l: (int(l[0]), l[1], l[12], l[13]))
+testDF = sqlContext.createDataFrame(testData, schema).where("results = 'Fail' OR results = 'Pass' OR results = 'Pass w/ Conditions'")
+predictionsDF = model.transform(testDF)
+predictionsDF.registerTempTable('Predictions')
+predictionsDF.columns
+
+predictionsDF.take(1)
+
+numSuccesses = predictionsDF.where("""(prediction = 0 AND results = 'Fail') OR
+                                      (prediction = 1 AND (results = 'Pass' OR
+                                                           results = 'Pass w/ Conditions'))""").count()
+numInspections = predictionsDF.count()
+
+print "There were", numInspections, "inspections and there were", numSuccesses, "successful predictions"
+print "This is a ", str((float(numSuccesses)/float(numInspections))*100)+"%", "success rate"
+
+%%sql -o probabilitiestable
+SELECT probability, words FROM Predictions LIMIT 5
+
+%%sql -o predictionstable
+SELECT prediction, results FROM Predictions LIMIT 10
+
+%%sql -o predictionstable
+SELECT prediction, results FROM Predictions
+
+%%local
+failSuccess = predictionstable[(predictionstable.prediction == 0) & (predictionstable.results == 'Fail')]['prediction'].count()
+failFailure = predictionstable[(predictionstable.prediction == 0) & (predictionstable.results <> 'Fail')]['prediction'].count()
+passSuccess = predictionstable[(predictionstable.prediction == 1) & (predictionstable.results <> 'Fail')]['prediction'].count()
+passFailure = predictionstable[(predictionstable.prediction == 1) & (predictionstable.results == 'Fail')]['prediction'].count()
+failSuccess, failFailure, passSuccess, passFailure
+
+
+%%local
+%matplotlib inline 
+import matplotlib.pyplot as plt
+
+labels = ['True positive', 'False positive', 'True negative', 'False negative']
+sizes = [failSuccess, failFailure, passSuccess, passFailure]
+plt.pie(sizes, labels=labels, autopct='%1.1f%%')
+plt.axis('equal')
+
+labels = ['True positive', 'False positive', 'True negative', 'False negative']
+sizes = [failSuccess, failFailure, passSuccess, passFailure]
+plt.pie(sizes, labels=labels, autopct='%1.1f%%')
+plt.axis('equal')
+
+
+:]]]
