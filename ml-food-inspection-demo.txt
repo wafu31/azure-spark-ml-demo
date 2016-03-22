@@ -1,4 +1,4 @@
-
+# ライブラリのインポート
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.feature import HashingTF, Tokenizer
@@ -6,6 +6,7 @@ from pyspark.sql import Row
 from pyspark.sql.functions import UserDefinedFunction
 from pyspark.sql.types import *
 
+# パース関数
 def csvParse(s):
     import csv
     from StringIO import StringIO
@@ -14,20 +15,26 @@ def csvParse(s):
     sio.close()
     return value
 
+# 入力データ読み込み+パース
 inspections = sc.textFile('wasb:///HdiSamples/HdiSamples/FoodInspectionData/Food_Inspections1.csv').map(csvParse)
 
+# データ内覧
 inspections.take(2)
 
+# データフレーム構造
 schema = StructType([StructField("id", IntegerType(), False),
                      StructField("name", StringType(), False),
                      StructField("results", StringType(), False),
                      StructField("violations", StringType(), True)])
 
+# データフレーム作成
 df = sqlContext.createDataFrame(inspections.map(lambda l: (int(l[0]), l[1], l[12], l[13])) , schema)
 df.registerTempTable('CountResults')
 
+# データフレーム内覧
 df.show(5)
 
+# フィルター関数
 def labelForResults(s):
     if s == 'Fail':
         return 0.0
@@ -36,28 +43,34 @@ def labelForResults(s):
     else:
         return -1.0
     
-
+# データフレームフィルター
 label = UserDefinedFunction(labelForResults, DoubleType())
 labeledData = df.select(label(df.results).alias('label'), df.violations).where('label>=0')
 
 labeledData.take(1)
 
+# トークン関数
 tokenizer = Tokenizer(inputCol="violations", outputCol="words")
 hashingTF = HashingTF(inputCol=tokenizer.getOutputCol(), outputCol="features")
 lr = LogisticRegression(maxIter=10, regParam=0.01)
 pipeline = Pipeline(stages=[tokenizer, hashingTF, lr])
 
+# モデル作成
 model = pipeline.fit(labeledData)
 
-testData = sc.textFile('wasb:///HdiSamples/HdiSamples/FoodInspectionData/Food_Inspections2.csv').map(csvParse)\
-           .map(lambda l: (int(l[0]), l[1], l[12], l[13]))
+# テストセット入力
+testData = sc.textFile('wasb:///HdiSamples/HdiSamples/FoodInspectionData/Food_Inspections2.csv').map(csvParse).map(lambda l: (int(l[0]), l[1], l[12], l[13]))
+
 testDF = sqlContext.createDataFrame(testData, schema).where("results = 'Fail' OR results = 'Pass' OR results = 'Pass w/ Conditions'")
+
+# モデル適用
 predictionsDF = model.transform(testDF)
 predictionsDF.registerTempTable('Predictions')
 predictionsDF.columns
 
 predictionsDF.take(1)
 
+# モデル評価
 numSuccesses = predictionsDF.where("""(prediction = 0 AND results = 'Fail') OR
                                       (prediction = 1 AND (results = 'Pass' OR
                                                            results = 'Pass w/ Conditions'))""").count()
@@ -82,7 +95,7 @@ passSuccess = predictionstable[(predictionstable.prediction == 1) & (predictions
 passFailure = predictionstable[(predictionstable.prediction == 1) & (predictionstable.results == 'Fail')]['prediction'].count()
 failSuccess, failFailure, passSuccess, passFailure
 
-
+# モデル評価可視化
 %%local
 %matplotlib inline 
 import matplotlib.pyplot as plt
